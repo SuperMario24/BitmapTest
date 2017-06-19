@@ -245,15 +245,57 @@ DiskLruCache的缓存添加操作是通过Editor完成的，Editor表示一个�
             return false;
         }
 
+经过上面的步骤，并没有真正将图片写入文件系统，还必须通过Editor的commit来提交写入操作，如果图片下载过程发生了异常，还可以通过Editor的abort来放弃
+整个操作:
+
+                   if(downloadUrlToStream(uri,outputStream)){
+                        editor.commit();
+                    }else {
+                        editor.abort();
+                    }
+                    mDiskLruCache.flush();
+
+经过上面几个步骤，图片已被正确的写入到文件磁盘缓存了，接下来图片的获取操作就不需要通过网络请求了。
 
 
 
+（3）缓存的查找：
 
+缓存的查找过程也要将url转换成key，然后通过DiskLruCache的get方法得到一个Snapshot对象，通过Snapshot对象就可以得到缓存的文件输入流，有了输入流，
+自然可以得到Bitmap对象了。通过BitmapFactory.Options加载一张缩放后的图片。但是那种方法对FileInputStream的缩放存在问题，因为FileInputStream
+是一种有序的文件流，但两次的decodeStram调用影响了文件流的位置属性，导致第二次decideStream得到的是null,为了解决这个问题，我们可以通过文件流得到
+所对应的文件描述符，然后再通过BitmapFactory.decodeFileDescriptor方法来加载一张缩放后的图片，这个过程实现如下：
 
+        Bitmap bitmap = null;
+        String key = hashKeyFromUrl(uri);
+        //磁盘缓存的读取要通过Snapshot类
+        DiskLruCache.Snapshot snapshot = mDiskLruCache.get(key);
+        if(snapshot != null){
+            FileInputStream fileInputStream = (FileInputStream) snapshot.getInputStream(DISK_CACHE_INDEX);
+            //获取文件描述符，压缩图片时要用到
+            FileDescriptor fileDescriptor = fileInputStream.getFD();
+            bitmap = mImageResizer.decodeSampleFromFileDescriptor(fileDescriptor,reqWidth,reqHeight);
 
+            //磁盘读取后添加到内存缓存
+            if(bitmap != null){
+                addBitmapToMemoryCache(key,bitmap);
+            }
+        }
 
+    public Bitmap decodeSampleFromFileDescriptor(FileDescriptor fd, int reqWidth, int reqHeight){
 
+        BitmapFactory.Options options = new BitmapFactory.Options();
+        options.inJustDecodeBounds = true;
+        //用文件描述符去解析Bitmap
+        BitmapFactory.decodeFileDescriptor(fd,null,options);
 
+        options.inSampleSize = calculateInSimpleSize(options,reqWidth,reqHeight);
+
+        options.inJustDecodeBounds = false;
+        return BitmapFactory.decodeFileDescriptor(fd,null,options);
+
+    }
+两种压缩图片的方法其中计算inSimpleSize采样率的方法是一致的。
 
 
 
